@@ -10,17 +10,42 @@ import { startJob } from "@/lib/orchestrator";
 export const runtime = "nodejs";
 
 const SUNO_URL_RE = /^https?:\/\/(www\.)?suno\.com\/(song|s)\/[A-Za-z0-9-]+/;
+// Vercel Blob 도메인만 허용 (SSRF 방지: 임의 URL 다운로드 금지)
+const BLOB_URL_RE = /^https:\/\/[a-z0-9-]+\.(public\.)?blob\.vercel-storage\.com\//i;
 
 const VideoModeEnum = z.enum(["image-to-video", "reference-to-video"]);
 
-const JsonBodySchema = z.object({
-  suno_url: z.string().regex(SUNO_URL_RE, "Suno URL 형식이 올바르지 않습니다"),
-  user_lyrics: z.string().max(10_000).optional().nullable(),
-  video_mode: VideoModeEnum.optional().nullable(),
-});
+const MOODBOARD_MAX = 5;
+
+const BlobUrl = z
+  .string()
+  .url()
+  .regex(BLOB_URL_RE, "Vercel Blob 도메인의 URL만 허용됩니다");
+
+const JsonBodySchema = z
+  .object({
+    suno_url: z
+      .string()
+      .regex(SUNO_URL_RE, "Suno URL 형식이 올바르지 않습니다")
+      .optional()
+      .nullable(),
+    mp3_url: BlobUrl.optional().nullable(),
+    moodboard_urls: z.array(BlobUrl).max(MOODBOARD_MAX).optional().nullable(),
+    protagonist_url: BlobUrl.optional().nullable(),
+    protagonist_consent: z.boolean().optional().nullable(),
+    user_lyrics: z.string().max(10_000).optional().nullable(),
+    video_mode: VideoModeEnum.optional().nullable(),
+  })
+  .refine(
+    (v) => Boolean(v.suno_url) || Boolean(v.mp3_url),
+    "suno_url 또는 mp3_url 중 하나는 필수입니다"
+  )
+  .refine(
+    (v) => !v.protagonist_url || v.protagonist_consent === true,
+    "주인공 사진 URL 사용 시 protagonist_consent: true 가 필요합니다"
+  );
 
 const MAX_LYRICS = 10_000;
-const MOODBOARD_MAX = 5;
 const MOODBOARD_FILE_MAX = 10 * 1024 * 1024;
 const MOODBOARD_TOTAL_MAX = 50 * 1024 * 1024;
 const PROTAGONIST_MAX = 10 * 1024 * 1024;
@@ -224,7 +249,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ id });
   }
 
-  // JSON 모드 (uploads 없이 Suno URL만)
+  // JSON 모드 — Suno URL 또는 Vercel Blob URL(들)을 받음.
+  // 클라이언트가 큰 파일은 직접 Blob으로 업로드한 뒤 URL만 여기로 보냄.
   let body: unknown;
   try {
     body = await req.json();
@@ -238,15 +264,23 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
+  const data = parsed.data;
+  const moodboardUrls = data.moodboard_urls ?? [];
 
   db.prepare(
-    `INSERT INTO jobs (id, suno_url, status, user_lyrics, video_mode, created_at, updated_at)
-     VALUES (?, ?, 'pending', ?, ?, ?, ?)`
+    `INSERT INTO jobs (
+       id, suno_url, mp3_url, status,
+       moodboard_urls, protagonist_url, user_lyrics, video_mode,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
-    parsed.data.suno_url,
-    parsed.data.user_lyrics ?? null,
-    parsed.data.video_mode ?? null,
+    data.suno_url ?? null,
+    data.mp3_url ?? null,
+    moodboardUrls.length > 0 ? JSON.stringify(moodboardUrls) : null,
+    data.protagonist_url ?? null,
+    data.user_lyrics ?? null,
+    data.video_mode ?? null,
     now,
     now
   );

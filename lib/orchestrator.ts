@@ -10,6 +10,7 @@ import {
 } from "./db";
 import { publish } from "./events";
 import { stages, stageIndex } from "./stages";
+import { ensureUploadFilesLocal } from "./blob-download";
 
 // 자동 진행 (각 review 건너뜀)
 const SKIP_STORY_REVIEW = process.env.SKIP_STORY_REVIEW === "true";
@@ -68,7 +69,7 @@ export function startJob(jobId: string, fromStage?: string): void {
 
 async function runJob(jobId: string, fromStage?: string): Promise<void> {
   const db = getDb();
-  const job = getJob(jobId);
+  let job = getJob(jobId);
   if (!job) throw new Error(`job not found: ${jobId}`);
 
   const workspaceDir = path.join(process.cwd(), "workspace", jobId);
@@ -83,13 +84,32 @@ async function runJob(jobId: string, fromStage?: string): Promise<void> {
     "UPDATE jobs SET status = ?, error = NULL, updated_at = ? WHERE id = ?"
   ).run("running", Date.now(), jobId);
 
+  // Vercel Blob 등 외부에 올라간 업로드 파일을 로컬 workspace로 가져온다.
+  // (mp3_url / moodboard_urls / protagonist_url → mp3_path / moodboard_paths / protagonist_path)
+  // 클라이언트 직접 업로드 흐름을 쓰면 jobs API는 URL만 받고, 실제 파일은 여기서 받아온다.
+  try {
+    await ensureUploadFilesLocal(jobId);
+    // path 컬럼들이 갱신됐을 수 있으니 재조회
+    const refreshed = getJob(jobId);
+    if (refreshed) job = refreshed;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    db.prepare(
+      "UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?"
+    ).run("failed", `업로드 파일 다운로드 실패: ${message}`, Date.now(), jobId);
+    publish({ type: "job_failed", jobId, error: message });
+    return;
+  }
+
   // Restore prior stage data into context (for resume / regenerate)
+  // job 변수는 위에서 refresh됐을 수 있음
+  const ctxJob = job;
   const ctx: StageContext = {
     jobId,
-    job,
+    job: ctxJob,
     workspaceDir,
-    uploads: getJobUploads(job),
-    userLyrics: job.user_lyrics ?? null,
+    uploads: getJobUploads(ctxJob),
+    userLyrics: ctxJob.user_lyrics ?? null,
     data: {},
     emit: () => {},
   };

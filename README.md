@@ -71,6 +71,7 @@ npm run dev
 | `MAX_BUDGET_KRW` | — | `10000` | 누적 비용 한도 (초과 시 자동 중단) |
 | `MAX_SCENES` | — | `4` | Stage 06 최대 멀티샷 장면 수 |
 | `IMAGE_HOST_MODE` | — | `data_uri` | OpenAI 이미지 단계용. 영상은 fal.storage 자동 |
+| `BLOB_READ_WRITE_TOKEN` | ✅ (Vercel 배포) | — | Vercel Blob 클라이언트 직접 업로드용. **Vercel 대시보드 → Storage → Create → Blob** 만들면 자동 주입. 로컬 dev는 Vercel CLI `vercel env pull .env.local`로 받기. |
 
 ## 예상 비용 (5분 곡)
 
@@ -101,6 +102,8 @@ npm run dev
 | `ffprobe를 찾을 수 없습니다` | ffmpeg 미설치. 위 시스템 의존성 참고. |
 | `FAL_KEY 환경변수가 없습니다` | `.env.local`에 키 추가 후 dev 서버 재시작. |
 | `fal.ai 응답에 video URL이 없습니다` | 모델 ID 잘못, 또는 fal 잔액 부족. fal.ai 콘솔에서 확인. |
+| `Failed to load resource: 413` (업로드 시) | Vercel function의 4.5MB body 한도. **클라이언트가 Vercel Blob으로 직접 업로드**하는 경로로 자동 전환됨 — `BLOB_READ_WRITE_TOKEN` 누락이면 이 에러. Vercel 대시보드에서 Blob store 생성하면 자동 주입. |
+| `서버에 BLOB_READ_WRITE_TOKEN이 설정되어 있지 않습니다` | Vercel 대시보드 → Storage → Blob 만들고 재배포. 로컬은 `vercel env pull`. |
 | `OpenAI 정책 거부` | 다른 사진으로 재시도. 또는 텍스트 기반 자동 fallback 결과 사용. |
 | `MAX_BUDGET_KRW 초과` | 한도 올리거나 `MAX_SCENES` 줄이기. |
 | 영상에 한글 자막 깨짐 | 시스템에 Pretendard 또는 Noto Sans CJK KR 설치. |

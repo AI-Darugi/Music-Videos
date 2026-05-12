@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { upload } from "@vercel/blob/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -41,6 +42,7 @@ export default function HomePage() {
   );
 
   const [submitting, setSubmitting] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const hasExtras = useMemo(
@@ -57,40 +59,68 @@ export default function HomePage() {
     (mode === "suno" ? sunoUrl.trim().length > 0 : mp3File !== null) &&
     (!protagonist || protagonistConsent);
 
+  async function uploadToBlob(
+    file: File,
+    prefix: "audio" | "moodboard" | "protagonist"
+  ): Promise<string> {
+    // 안전한 pathname: prefix/<timestamp>-<random>.<ext>
+    // (서버 /api/upload에서 prefix로 contentType/size 정책 분기)
+    const ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] ?? "").toLowerCase();
+    const safeName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
+    const blob = await upload(`${prefix}/${safeName}`, file, {
+      access: "public",
+      handleUploadUrl: "/api/upload",
+      contentType: file.type || undefined,
+    });
+    return blob.url;
+  }
+
   async function submit() {
     if (!canSubmit) return;
     setError(null);
     setSubmitting(true);
+    setUploadStatus(null);
     try {
-      const usesMultipart = mode === "upload" || hasExtras;
-      let res: Response;
+      // 1) 큰 파일들은 클라이언트에서 직접 Vercel Blob으로 업로드.
+      //    → Vercel function의 4.5MB body 한도(413) 우회.
+      let mp3Url: string | null = null;
+      const moodboardUrls: string[] = [];
+      let protagonistUrl: string | null = null;
 
-      if (!usesMultipart) {
-        res = await fetch("/api/jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            suno_url: sunoUrl.trim(),
-            user_lyrics: userLyrics.trim() || undefined,
-            video_mode: videoMode,
-          }),
-        });
-      } else {
-        const fd = new FormData();
-        if (mode === "suno") {
-          fd.append("suno_url", sunoUrl.trim());
-        } else if (mp3File) {
-          fd.append("mp3", mp3File);
-        }
-        for (const f of moodboard) fd.append("moodboard", f);
-        if (protagonist) {
-          fd.append("protagonist", protagonist);
-          fd.append("protagonist_consent", "true");
-        }
-        if (userLyrics.trim()) fd.append("user_lyrics", userLyrics);
-        fd.append("video_mode", videoMode);
-        res = await fetch("/api/jobs", { method: "POST", body: fd });
+      if (mode === "upload" && mp3File) {
+        setUploadStatus(`오디오 업로드 중... (${formatBytes(mp3File.size)})`);
+        mp3Url = await uploadToBlob(mp3File, "audio");
       }
+      if (moodboard.length > 0) {
+        for (let i = 0; i < moodboard.length; i++) {
+          setUploadStatus(`무드보드 업로드 ${i + 1}/${moodboard.length}...`);
+          moodboardUrls.push(await uploadToBlob(moodboard[i], "moodboard"));
+        }
+      }
+      if (protagonist) {
+        setUploadStatus("주인공 사진 업로드 중...");
+        protagonistUrl = await uploadToBlob(protagonist, "protagonist");
+      }
+
+      // 2) URL들과 메타데이터를 JSON으로 /api/jobs에 전송 (수 KB만)
+      setUploadStatus("작업 생성 중...");
+      const payload: Record<string, unknown> = {
+        video_mode: videoMode,
+      };
+      if (mode === "suno") payload.suno_url = sunoUrl.trim();
+      if (mp3Url) payload.mp3_url = mp3Url;
+      if (moodboardUrls.length > 0) payload.moodboard_urls = moodboardUrls;
+      if (protagonistUrl) {
+        payload.protagonist_url = protagonistUrl;
+        payload.protagonist_consent = true;
+      }
+      if (userLyrics.trim()) payload.user_lyrics = userLyrics;
+
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -101,6 +131,7 @@ export default function HomePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setSubmitting(false);
+      setUploadStatus(null);
     }
   }
 
@@ -261,7 +292,7 @@ export default function HomePage() {
             {submitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                생성 시작 중...
+                {uploadStatus ?? "생성 시작 중..."}
               </>
             ) : (
               "뮤직비디오 생성 시작"
@@ -583,6 +614,12 @@ function ModeToggle({
       {label}
     </button>
   );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function BackgroundWaves() {

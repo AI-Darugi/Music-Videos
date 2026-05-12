@@ -17,6 +17,7 @@ export type JobRow = {
   id: string;
   suno_url: string | null;
   mp3_path: string | null;
+  mp3_url: string | null;
   status: JobStatus;
   current_stage: string | null;
   result_path: string | null;
@@ -111,6 +112,7 @@ function ensureSchema(db: Database.Database) {
   ensureColumn(db, "jobs", "cast_overrides", "TEXT");
   ensureColumn(db, "jobs", "keyframe_overrides", "TEXT");
   ensureColumn(db, "jobs", "video_mode", "TEXT");
+  ensureColumn(db, "jobs", "mp3_url", "TEXT");
 }
 
 function ensureColumn(
